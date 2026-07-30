@@ -166,7 +166,7 @@ with st.sidebar:
     f_exp = st.file_uploader("Experimental data (t, F)", type=["csv", "txt"])
 
     st.header("2. Parameters")
-    alpha = st.number_input("alpha value (=A_ini/A_end)", value=1.193975685, format="%.9f")
+    alpha = st.number_input("alpha value (=A_ini/A_end)", value=0.0021233689, format="%.9f")
     method = st.radio("Optimization method", ["NNLS + Tikhonov", "SLSQP (non-negative constraint)"])
 
     # sec / k / lambda normally use the default files bundled with the app.
