@@ -1,15 +1,13 @@
 """
 LDF kinetics analysis — Streamlit app
-Inversely solves for the rate-constant distribution (k_LDF) from experimental
-uptake data. Uses Tikhonov regularization + NNLS / SLSQP, with the L-curve
-method to pick the optimal lambda (inflection point / corner).
+速度定数分布(k_LDF)を実験のuptakeデータから逆解析する。
+Tikhonov正則化 + NNLS / SLSQP、L-curve法で最適λ(変曲点/角)を選択。
 
-Converted from LDF.ipynb into a Streamlit app.
+LDF.ipynb を Streamlit アプリに変換したもの。
 """
 
 import io
 import zipfile
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -19,28 +17,19 @@ from scipy.optimize import minimize, nnls
 
 st.set_page_config(page_title="LDF kinetics analysis", layout="wide")
 
-# Reference the default data files (sec / k / lambda) that ship alongside
-# this app using an absolute path. In online environments (e.g. Streamlit
-# Cloud) the working directory can vary, so we don't rely solely on a
-# relative path like "01_sec.csv".
-BASE_DIR = Path(__file__).resolve().parent
-DEFAULT_SEC_PATH = BASE_DIR / "01_sec.csv"
-DEFAULT_K_PATH = BASE_DIR / "02_k.csv"
-DEFAULT_LAMBDA_PATH = BASE_DIR / "03_lambda.csv"
-
 
 # --------------------------------------------------------------------------
-# Data loading utilities
+# データ読み込みユーティリティ
 # --------------------------------------------------------------------------
 def load_single_column(uploaded, default_path):
-    """Read a single-column CSV (CRLF allowed) into a 1D array."""
+    """1列のCSV(CRLF可)を1次元配列で読む。"""
     src = uploaded if uploaded is not None else default_path
     df = pd.read_csv(src, header=None)
     return df.iloc[:, 0].to_numpy(dtype=float)
 
 
 def load_exp(uploaded, default_path):
-    """Read the two experimental columns (t, F). Tab/comma/whitespace all allowed."""
+    """実験データ (t, F) の2列を読む。タブ/カンマ/空白いずれも許容。"""
     src = uploaded if uploaded is not None else default_path
     df = pd.read_csv(src, sep=r"[\t,]", engine="python", header=None)
     df = df.iloc[:, :2].apply(pd.to_numeric, errors="coerce").dropna()
@@ -49,7 +38,7 @@ def load_exp(uploaded, default_path):
 
 
 # --------------------------------------------------------------------------
-# Optimization (NNLS + Tikhonov regularization)
+# 最適化 (NNLS + Tikhonov 正則化)
 # --------------------------------------------------------------------------
 def opt_NNLS(A, b, lambda_values):
     A = np.asarray(A, dtype=float)
@@ -70,7 +59,7 @@ def opt_NNLS(A, b, lambda_values):
 
 
 # --------------------------------------------------------------------------
-# Optimization (SLSQP, non-negativity constraint)
+# 最適化 (SLSQP, 非負制約)
 # --------------------------------------------------------------------------
 def opt_SLSQP(A, b, lambda_values):
     A = np.asarray(A, dtype=float)
@@ -102,14 +91,13 @@ def _pack(results, weights):
 
 
 # --------------------------------------------------------------------------
-# Detect the L-curve corner (inflection point) using Menger curvature
-#   Curvature of the circle through 3 points: c = 4*Area / (a*b*c).
-#   Works even when x is not monotonic, and is more robust for corner
-#   detection than finite differences.
+# L-curve の角(変曲点)を Menger 曲率で検出
+#   3点が作る外接円の曲率 c = 4*Area / (a*b*c)。
+#   x が単調でなくても使え、有限差分より角検出に頑健。
 # --------------------------------------------------------------------------
 def menger_curvature(x, y):
     n = len(x)
-    curv = np.zeros(n)  # endpoints are 0
+    curv = np.zeros(n)  # 端点は 0
     for i in range(1, n - 1):
         x1, y1 = x[i - 1], y[i - 1]
         x2, y2 = x[i],     y[i]
@@ -124,29 +112,26 @@ def menger_curvature(x, y):
 
 
 def _cross2(ox, oy, ax, ay, bx, by):
-    """z-component of the 2D cross product (a-o) x (b-o)."""
+    """2Dの外積 (a-o) x (b-o) のz成分。"""
     return (ax - ox) * (by - oy) - (ay - oy) * (bx - ox)
 
 
 def detect_corner(x, y):
-    """Return the index of the L-curve corner (inflection point).
+    """L-curveの角(変曲点)のインデックスを返す。
 
-    Taking the global maximum of curvature can pick up a jagged, spurious
-    kink on the flat, over-regularized branch (large log||Ax-b||). Instead,
-    we only consider points that curve toward the "ideal corner" side
-    (minimum residual and minimum norm), and among those pick the point
-    with maximum curvature. Both endpoints are automatically excluded
-    since they are unstable.
+    曲率の絶対最大だと、過正則化側(大きい log||Ax-b||)の平坦枝に出る
+    ギザついた偽の折れ点を拾うことがある。そこで「理想の角=残差最小かつ
+    ノルム最小の点」の側に凸に曲がっている点だけを候補にし、その中で
+    曲率が最大の点を選ぶ。両端は不安定なので自動的に除外される。
     """
     n = len(x)
     if n < 3:
         return 0
     curv = menger_curvature(x, y)
-    ideal_x, ideal_y = float(np.min(x)), float(np.min(y))  # small residual, small norm
+    ideal_x, ideal_y = float(np.min(x)), float(np.min(y))  # 残差小・ノルム小
     cand = np.zeros(n, dtype=bool)
     for i in range(1, n - 1):
-        # For the chord P_{i-1}—P_{i+1}, point i curves toward the origin
-        # side if it's on the same side as the ideal corner.
+        # 弦 P_{i-1}—P_{i+1} に対して、点iと理想の角が同じ側なら原点側に凸
         side_pt = _cross2(x[i - 1], y[i - 1], x[i + 1], y[i + 1], x[i], y[i])
         side_id = _cross2(x[i - 1], y[i - 1], x[i + 1], y[i + 1], ideal_x, ideal_y)
         cand[i] = side_pt * side_id > 0
@@ -155,76 +140,51 @@ def detect_corner(x, y):
 
 
 # --------------------------------------------------------------------------
-# Sidebar: inputs
+# サイドバー: 入力
 # --------------------------------------------------------------------------
 st.title("LDF kinetics analysis")
-st.caption("Inverse analysis of the rate-constant distribution k_LDF from experimental uptake data (Tikhonov regularization + L-curve method)")
+st.caption("速度定数分布 k_LDF を実験uptakeデータから逆解析（Tikhonov正則化 + L-curve法）")
 
 with st.sidebar:
-    st.header("1. Experimental data")
-    st.caption("Upload a 2-column CSV/TXT of (t, F) — tab, comma, or whitespace separated are all fine")
-    f_exp = st.file_uploader("Experimental data (t, F)", type=["csv", "txt"])
+    st.header("1. 入力ファイル")
+    st.caption("未指定なら同梱のサンプルを使用")
+    f_exp = st.file_uploader("00_exp.csv — 実験データ (t, F)", type=["csv", "txt"])
+    f_sec = st.file_uploader("01_sec.csv — 計算用の時間 sec", type=["csv", "txt"])
+    f_k = st.file_uploader("02_k.csv — k値", type=["csv", "txt"])
+    f_lam = st.file_uploader("03_lambda.csv — λ値リスト", type=["csv", "txt"])
 
-    st.header("2. Parameters")
-    alpha = st.number_input("alpha value (=A_ini/A_end)", value=0.0021233689, format="%.9f")
-    method = st.radio("Optimization method", ["NNLS + Tikhonov", "SLSQP (non-negative constraint)"])
+    st.header("2. パラメータ")
+    alpha = st.number_input("α値 (=A_ini/A_end)", value=1.193975685, format="%.9f")
+    method = st.radio("最適化手法", ["NNLS + Tikhonov", "SLSQP (非負制約)"])
 
-    # sec / k / lambda normally use the default files bundled with the app.
-    # Only advanced users need to open this expander to override them.
-    with st.expander("Advanced settings (usually no need to change)"):
-        st.caption("Only upload these if you need to override the time grid, k values, "
-                   "or lambda list. If left blank, the bundled default files are used.")
-        f_sec = st.file_uploader("01_sec.csv — time grid for computation (leave blank to use default)",
-                                 type=["csv", "txt"])
-        f_k = st.file_uploader("02_k.csv — k values (leave blank to use default)",
-                               type=["csv", "txt"])
+    st.header("3. λ グリッド")
+    lam_source = st.radio(
+        "λ の与え方",
+        ["自動生成 (log等間隔・推奨)", "ファイルから (03_lambda.csv)"],
+        help="log等間隔で密にとると L-curve が滑らかになり、角も検出しやすくなります。",
+    )
+    if lam_source.startswith("自動"):
+        lam_min_exp = st.number_input("log10(λ最小)", value=-4.0, step=0.5)
+        lam_max_exp = st.number_input("log10(λ最大)", value=3.0, step=0.5)
+        lam_n = st.slider("λ 点数", 20, 200, 60)
+    else:
+        lam_min_exp = lam_max_exp = lam_n = None
 
-        st.subheader("Lambda grid")
-        lam_source = st.radio(
-            "How to specify lambda",
-            ["Auto-generate (log-spaced, recommended)", "From file (03_lambda.csv)"],
-            help="A dense, log-spaced grid makes the L-curve smoother and the corner easier to detect.",
-        )
-        if lam_source.startswith("Auto"):
-            lam_min_exp = st.number_input("log10(lambda min)", value=-4.0, step=0.5)
-            lam_max_exp = st.number_input("log10(lambda max)", value=3.0, step=0.5)
-            lam_n = st.slider("Number of lambda points", 20, 200, 60)
-            f_lam = None
-        else:
-            lam_min_exp = lam_max_exp = lam_n = None
-            f_lam = st.file_uploader("03_lambda.csv — list of lambda values", type=["csv", "txt"])
-
-    run = st.button("Run calculation", type="primary", use_container_width=True,
-                    disabled=f_exp is None)
-    if f_exp is None:
-        st.caption("⬆ Upload your experimental data to enable the calculation.")
+    run = st.button("計算を実行", type="primary", use_container_width=True)
 
 
 # --------------------------------------------------------------------------
-# Computation (runs only on button press; result is kept in session_state)
+# 計算（ボタン押下時のみ実行し、結果を session_state に保持）
 # --------------------------------------------------------------------------
 def compute():
-    # Check upfront whether the default files (sec/k) are present, and give
-    # a clear message here if the deployment forgot to include them.
-    missing = [p.name for p in (DEFAULT_SEC_PATH, DEFAULT_K_PATH)
-               if not p.exists()]
-    if f_sec is None and DEFAULT_SEC_PATH.name in missing:
-        st.error(f"Default file {DEFAULT_SEC_PATH.name} was not found. "
-                 "Place it in the same folder as the app, or upload it via Advanced settings.")
-        return
-    if f_k is None and DEFAULT_K_PATH.name in missing:
-        st.error(f"Default file {DEFAULT_K_PATH.name} was not found. "
-                 "Place it in the same folder as the app, or upload it via Advanced settings.")
-        return
+    exp_data = load_exp(f_exp, "00_exp.csv")
+    t_values = load_single_column(f_sec, "01_sec.csv")
+    k_values = load_single_column(f_k, "02_k.csv")
 
-    exp_data = load_exp(f_exp, None)
-    t_values = load_single_column(f_sec, DEFAULT_SEC_PATH)
-    k_values = load_single_column(f_k, DEFAULT_K_PATH)
-
-    if lam_source.startswith("Auto"):
+    if lam_source.startswith("自動"):
         lambda_values = np.logspace(lam_min_exp, lam_max_exp, int(lam_n))
     else:
-        lambda_values = load_single_column(f_lam, DEFAULT_LAMBDA_PATH)
+        lambda_values = load_single_column(f_lam, "03_lambda.csv")
 
     sec_data = pd.DataFrame({"sec": t_values})
     sec_data["F"] = np.interp(sec_data["sec"], exp_data["t"], exp_data["F"])
@@ -240,10 +200,10 @@ def compute():
 
     if df_results.empty:
         st.session_state.pop("res", None)
-        st.error("No lambda value converged successfully. Please check your inputs.")
+        st.error("最適化に成功したλがありません。入力を確認してください。")
         return
 
-    # Sort by ascending lambda (to draw a smooth L-curve)
+    # λ昇順にソート（L-curveを滑らかに描くため）
     order = np.argsort(df_results["Lambda"].to_numpy(), kind="stable")
     df_results = df_results.iloc[order].reset_index(drop=True)
     df_weight = df_weight.iloc[order].reset_index(drop=True)
@@ -258,7 +218,7 @@ def compute():
         corner_idx=corner_idx, A_shape=A.shape,
         n_lambda=len(lambda_values),
     )
-    # Reset the default selection to the detected corner
+    # 既定の選択を角にリセット
     st.session_state["sel_idx"] = corner_idx
 
 
@@ -267,8 +227,7 @@ if run:
 
 
 # --------------------------------------------------------------------------
-# Display (if a result exists, lambda can be picked via slider without
-# recomputing)
+# 表示（結果があればスライダーで再計算なしにλを選べる）
 # --------------------------------------------------------------------------
 def display():
     r = st.session_state["res"]
@@ -284,22 +243,20 @@ def display():
     z = df_results["Lambda"].to_numpy()
 
     c1, c2, c3 = st.columns(3)
-    c1.metric("Shape of A (kernel)", f"{r['A_shape'][0]} x {r['A_shape'][1]}")
-    c2.metric("Length of b", f"{len(sec_data)}")
-    c3.metric("Number of lambda values", f"{r['n_lambda']}")
+    c1.metric("A (kernel) の形状", f"{r['A_shape'][0]} × {r['A_shape'][1]}")
+    c2.metric("b の長さ", f"{len(sec_data)}")
+    c3.metric("λ 個数", f"{r['n_lambda']}")
 
-    st.subheader("L-curve — Select inflection point")
-    st.caption("Use the slider to move along the L-curve (= lambda) and select the corner. "
-               "Default is the automatically detected corner.")
+    st.subheader("L-curve — Select infelction point")
+    st.caption("スライダーで L-curve 上の点(=λ)を動かして角を選べます。既定は自動検出した角。")
 
-    # Interactive lambda selection (no recomputation)
-    # The default value is passed via session_state (using both value= and
-    # key= together would trigger a warning).
+    # インタラクティブなλ選択（再計算なし）
+    # 既定値は session_state 経由で渡す（value= と key= の併用は警告になるため）
     if "sel_idx" not in st.session_state:
         st.session_state["sel_idx"] = corner_idx
     st.session_state["sel_idx"] = min(st.session_state["sel_idx"], len(z) - 1)
     sel_idx = st.slider(
-        "Lambda index (Left = small lambda / Right = large lambda)",
+        "λ index（Left = small λ / Right = large λ）",
         min_value=0, max_value=len(z) - 1,
         key="sel_idx",
     )
@@ -310,8 +267,7 @@ def display():
     m1.metric("Auto selected λ", f"{opt_lambda:g}")
     m2.metric("Selecting λ", f"{row_lambda:g}")
 
-   # Draw the L-curve (kept small, fit in the left half so the fitting/
-   # distribution plots can be viewed at the same time)
+   # L-curve 描画（小さめ・左半分に収めて fitting/分布 を同時に見やすく）
     fig_l, ax = plt.subplots(figsize=(5, 4))
     ax.plot(x, y, "-o", color="black", markersize=3, label="L-curve", zorder=1)
     ax.scatter(x[corner_idx], y[corner_idx], s=55, facecolors="none",
@@ -331,8 +287,8 @@ def display():
     with lcol:
         st.pyplot(fig_l, use_container_width=False)
 
-    # Fitting & distribution for the selected lambda
-    st.subheader("Fitting & distribution")
+    # 選択したλで fitting & 分布
+    st.subheader("Fitting & 分布")
     dist_y = np.array(df_weight.loc[sel_idx, "weight, x"], dtype=float)
     dist_x = k_values
     uptake_x = sec_data["sec"].to_numpy()
@@ -361,12 +317,12 @@ def display():
         #a2.legend()
         st.pyplot(fig2)
 
-    # Output
+    # 出力
     kernel_df = pd.DataFrame(kernel, index=sec_data["sec"].to_numpy(), columns=k_values)
     k_dist = pd.DataFrame({"k_LDF[1/s]": dist_x, "Weight[-]": dist_y})
     lambda_set = pd.DataFrame({"Set": [row_lambda], "Optimal": [opt_lambda]})
 
-    st.subheader("Output data")
+    st.subheader("出力データ")
     st.dataframe(k_dist, use_container_width=True, height=250)
 
     outputs = {
@@ -382,7 +338,7 @@ def display():
         for name, content in outputs.items():
             zf.writestr(name, content)
     st.download_button(
-        "Download all outputs as ZIP", data=buf.getvalue(),
+        "全出力をZIPでダウンロード", data=buf.getvalue(),
         file_name="LDF_output.zip", mime="application/zip",
         use_container_width=True,
     )
@@ -391,4 +347,4 @@ def display():
 if "res" in st.session_state:
     display()
 else:
-    st.info("Check your inputs in the sidebar on the left, then press \"Run calculation\".")
+    st.info("左のサイドバーで入力を確認し、「計算を実行」を押してください。")
